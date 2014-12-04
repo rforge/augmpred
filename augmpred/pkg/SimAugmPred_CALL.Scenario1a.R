@@ -1,20 +1,18 @@
 fun <- function( j ) {
- library(mvtnorm);
- library(glmnet);
- n=1100;
+ n=100;
  p=1000;
  q=100;
  beta<-rep(0,min(p,n));
  index<-1; #index of PCs associatd with outcome Y
  beta[index]<-rep(0.01,length(index));
  alpha=0; #0:ridge penalty,1:lasso#
- alpha2=0;#0:ridge penalty,1:lasso#
+ alpha2=0.5;#0:ridge penalty,1:lasso#
  n.train=50;
  nfolds=5;
  nperm=500;
  index.val<-(n.train+1):n;
 
- source("SimAugmPred_Functions.R");
+ source("SimAugmPred_Functionsv2.R");
 
 #Correlation matrix of X1#
 rho.Hub = c(.9,.5);
@@ -33,17 +31,19 @@ cor2<-diag(q);
 
 
 #generate X1, X2 and Y
-data<-Sim.Model.1(n=n,p=p,q=q,cor.mat.1=cor1,cor.mat.2=cor2,beta=beta);
+set.seed(123)
+data<-Sim.Model.1(n=n,p=p,q=q,cor.mat.1=cor1,cor.mat.2=cor2,beta=beta, seed=123);
+
 
 #Create outer CV partition#
 folds<-createFolds(1:n.train, k = nfolds, list = T)
 
 # Estimates with 2CV#
 index.train<-1:n.train;
-Y.X1.2CV<-glmnet.2CV(X=data$X1[index.train,],Y=data$Y[index.train],alpha=alpha,folds=folds,nfolds=nfolds);
+Y.X1.2CV<-glmnet.2CV(X=data$X1[index.train,],Y=data$Y[index.train],alpha=alpha,folds=folds,nfolds=nfolds);alarm()
 Q2.X1.2CV<-Y.X1.2CV$Q2;
 p.X1.2CV<-Y.X1.2CV$p;
-
+bhat.X1.2CV<-Y.X1.2CV$betahat[-1,];
 res<-data$Y[index.train]-p.X1.2CV;
 
 X2.2CV<-Q2.test.2CV(X1=data$X1[index.train,],X2=data$X2[index.train,],res=res,Y=data$Y[index.train],alpha=alpha2,folds=folds,nfolds=nfolds,nperm=nperm);
@@ -53,8 +53,8 @@ Q2.GLOBAL<-X2.2CV$Q2.global
 
 
 #Validation quantities#
-X1.scale<-sapply(1:ncol(data$X1),function(i)scale(data$X1[index.train,i]))
-fit1=glmnet(X1.scale,data$Y[index.train],family="gaussian",standardize=F,alpha=alpha);
+X1.scale= scale(data$X1) 
+fit1=glmnet(X1.scale, data$Y[index.train],family="gaussian",standardize=F,alpha=alpha);
 cv.fit1=cv.glmnet(X1.scale,data$Y[index.train],family="gaussian",standardize=F,alpha=alpha);
 
 X1.VAL.scale<-sapply(1:ncol(data$X1),function(i)scale(data$X1[index.val,i]));

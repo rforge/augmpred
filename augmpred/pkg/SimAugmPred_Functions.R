@@ -3,11 +3,15 @@
 #Author: Mar Rodríguez Girondo #
 #Date: November 2014           #
 ################################
+source("includeCcode.R")
+library(glmnet)
 
 ###########################################################################
 ##  Simulating the Hub Matrix (entries filled in using Toeplitz structure)#
 ###########################################################################
-
+# latets addition: instead of mvnorm function from R
+#use C source function to generate multivariate normals
+#syntax is the same, but it works better on higher dimensions
 # this function calculates a Toeplitz matrix with values descending
 # from a user specified maximum to minimum.  The matrix has a 
 # block diagonal structure.  The size and base correlation for each
@@ -83,14 +87,16 @@ rho.func <- function(r.max, r.min, power,p){
 
 
 #Simulation of data #
-Sim.Model.1<-function(n,p,q,cor.mat.1,cor.mat.2,beta){
+#seed parameter is added to pass to the C function
+Sim.Model.1<-function(n, p,q,cor.mat.1,cor.mat.2,beta, seed){
 
 #Generate X1 (first source of predictors)
-X1<-rmvnorm(n=n,sigma=cor.mat.1)
-s1<-svd(X1)
-U01<-rmvnorm(n=n,sigma=diag(min(p,n)))
-X1<-U01%*%diag(s1$d)%*%t(s1$v)
 
+X1<-mvrnormArma(n,mu=rep(0, dim(cor.mat.1)[1]), sigma=cor.mat.1, seed)
+s1<-svd(X1)
+U01<- mvrnormArma(n,mu=rep(0, min(p,n)), sigma=diag(min(p,n)), seed)
+
+X1<-U01%*%diag(s1$d)%*%t(s1$v)
 
 #Generate X2 (second source of predictors)
 X02<-rmvnorm(n,sigma=cor.mat.2)
@@ -160,7 +166,7 @@ n=nrow(X)
 
 
 fit.glmnet=lapply(1:nfolds,function(i)glmnet(X[-folds[[i]],],Y[-folds[[i]]],family="gaussian",standardize=T,alpha=alpha))
-cv.fit.glmnet=lapply(1:nfolds,function(i)cv.glmnet(X[-folds[[i]],],Y[-folds[[i]]],family="gaussian",standardize=T,alpha=alpha))
+cv.fit.glmnet=lapply(1:nfolds,function(i)cv.glmnet(X[-folds[[i]],],Y[-folds[[i]]],family="gaussian",standardize=T,alpha=alpha, type.measure="mse"))
 
 p.cv.glmnet=unlist(lapply(1:nfolds,function(i)predict(fit.glmnet[[i]],matrix(X[folds[[i]],],ncol=ncol(X)),s=cv.fit.glmnet[[i]]$lambda.min)))
 p.cv.glmnet<-p.cv.glmnet[order(unlist(folds))]
