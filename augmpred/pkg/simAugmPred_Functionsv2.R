@@ -163,25 +163,137 @@ createFolds<-function (y, k = 10, list = TRUE, returnTrain = FALSE)
     else out <- foldVector
     out
 }
-
+#a function for cross-validation on alpha and lambda
+#addition for the optimum alpha search
+#see stackexchange: http://stats.stackexchange.com/questions/17609/cross-validation-with-two-parameters-elastic-net-case/17612#17612
+cv2.glmnet <- function(x, y, weights, offset = NULL, lambda = NULL, type.measure = c("mse", 
+				"deviance", "class", "auc", "mae"), nfolds = 10, foldid, grouped = TRUE, keep = FALSE, parallel = FALSE, alphas=seq(0,1,by=0.1),...)
+{
+	#preamble: checking for parameters and passing them from ... to the functioin
+	if (missing(type.measure)) 
+		type.measure = "default"
+	else type.measure = match.arg(type.measure)
+	if (!is.null(lambda) && length(lambda) < 2) 
+		stop("Need more than one value of lambda for cv.glmnet")
+	N = nrow(x)
+	if (missing(weights)) 
+		weights = rep(1, N)
+	else weights = as.double(weights)
+	y = drop(y)
+	glmnet.call = match.call(expand.dots = TRUE)
+	which = match(c("type.measure", "nfolds", "foldid", "grouped", 
+					"keep", "alphas"), names(glmnet.call), F)
+	if (any(which)) 
+		glmnet.call = glmnet.call[-which]
+	
+	cv2alpha <- vector(mode="list", length=length(alphas))
+	for(indAlpha in 1:length(alphas)){
+	alpha=alphas[indAlpha]
+	glmnet.call[[1]] = as.name("glmnet")
+	glmnet.object = glmnet(x, y, weights = weights, offset = offset, 
+			lambda = lambda, alpha=alpha, ...)
+	#glmnet.object$call = glmnet.call #temporarily disable since it does not get alpha
+	is.offset = glmnet.object$offset
+	lambda = glmnet.object$lambda
+	if (inherits(glmnet.object, "multnet")) {
+		nz = predict(glmnet.object, type = "nonzero")
+		nz = sapply(nz, function(x) sapply(x, length))
+		nz = ceiling(apply(nz, 1, median))
+	}
+	else nz = sapply(predict(glmnet.object, type = "nonzero"), 
+				length)
+	if (missing(foldid)) 
+		foldid = sample(rep(seq(nfolds), length = N))
+	else nfolds = max(foldid)
+	if (nfolds < 3) 
+		stop("nfolds must be bigger than 3; nfolds=10 recommended")
+	outlist = as.list(seq(nfolds))
+	if (parallel && require(foreach)) {
+		outlist = foreach(i = seq(nfolds), .packages = c("glmnet")) %dopar% 
+				{
+					which = foldid == i
+					if (is.matrix(y)) 
+						y_sub = y[!which, ]
+					else y_sub = y[!which]
+					if (is.offset) 
+						offset_sub = as.matrix(offset)[!which, ]
+					else offset_sub = NULL
+					glmnet(x[!which, , drop = FALSE], y_sub, lambda = lambda, 
+							offset = offset_sub, weights = weights[!which], alpha=alpha, 
+							...)
+				}
+	}
+	else {
+		for (i in seq(nfolds)) {
+			which = foldid == i
+			if (is.matrix(y)) 
+				y_sub = y[!which, ]
+			else y_sub = y[!which]
+			if (is.offset) 
+				offset_sub = as.matrix(offset)[!which, ]
+			else offset_sub = NULL
+			outlist[[i]] = glmnet(x[!which, , drop = FALSE], alpha=alpha,
+					y_sub, lambda = lambda, offset = offset_sub, 
+					weights = weights[!which], ...)
+		}
+	}
+	fun = paste("cv", class(glmnet.object)[[1]], sep = ".")
+	cvstuff = do.call(fun, list(outlist, lambda, x, y, weights, 
+					offset, foldid, type.measure, grouped, keep))
+	cvm = cvstuff$cvm
+	cvsd = cvstuff$cvsd
+	cvname = cvstuff$name
+	out = list(alpha=alpha, lambda = lambda, cvm = cvm, cvsd = cvsd, cvup = cvm + 
+					cvsd, cvlo = cvm - cvsd, nzero = nz, name = cvname, glmnet.fit = glmnet.object)
+	if (keep) 
+		out = c(out, list(fit.preval = cvstuff$fit.preval, foldid = foldid))
+	lamin = if (type.measure == "auc") 
+				getmin(lambda, -cvm, cvsd)
+			else getmin(lambda, cvm, cvsd)
+	obj = c(out, as.list(lamin))
+	class(obj) = "cv.glmnet"
+	cv2alpha[[indAlpha]] = obj	
+	}
+#cv2alpha
+#either leave it here and process in another function
+#or put extra stuff to check the min (alpha, lambda)
+#go for option 2, so that next to results for ecah alpha we have the min alpha and lambda
+#collect the optimum lambda for each alpha
+}
 
 ############################################################################
 #glmnet wrapper to get double cv predictions and predictive performance Q^2#   
 #number of folds (nfolds) and partitions (folds) are entered as input      #
 ############################################################################
-
-glmnet.2CV<-function(X,Y,alpha=alpha,folds,nfolds){
+glmnet.2CV<-function(X,Y,alphas,folds,nfolds){
 
 if(nrow(X)!=length(Y)) {stop("Dimensions of X and Y do not match!")}
-alpha=alpha
 n=nrow(X)
+fit.glmnet=lapply(1:nfolds,function(i) glmnet(X[-folds[[i]],],Y[-folds[[i]]],family="gaussian",standardize=T,alpha=alpha))
 
-fit.glmnet=lapply(1:nfolds,function(i)glmnet(X[-folds[[i]],],Y[-folds[[i]]],family="gaussian",standardize=T,alpha=alpha))
-cv.fit.glmnet=lapply(1:nfolds,function(i)cv.glmnet(X[-folds[[i]],],Y[-folds[[i]]],family="gaussian",standardize=T,alpha=alpha, type.measure="mse"))
+cv.fit.glmnet<- vector(mode="list", length=nfolds)
+for(i in 1:nfolds){
+			cv2alpha=lapply(alphas, function(alpha) cv.glmnet(X[-folds[[i]],],Y[-folds[[i]]],family="gaussian",standardize=T,alpha=alpha, type.measure="mse"))
+			optimumPerAlpha<-sapply(seq_along(alphas), function(x){
+						curcvs<-cv2alpha[[x]]
+						indOfMin<-match(curcvs$lambda.min, curcvs$lambda)
+						c(lam=curcvs$lambda.min, alph=alphas[x], cvu=curcvs$cvup[indOfMin],cvm=curcvs$cvm[indOfMin])
+					})
+#step 3: find the overall optimum
+			posOfOptimum<-which.min(optimumPerAlpha["cvu",])
+			overall.lambda.min<-optimumPerAlpha["lam",posOfOptimum]
+			overall.alpha.min<-optimumPerAlpha["alph",posOfOptimum]
+			overall.criterionthreshold<-optimumPerAlpha["cvu",posOfOptimum]
+			finalmod = glmnet(X[-folds[[i]],],Y[-folds[[i]]], family="gaussian", standardize=T, alpha=overall.alpha.min, lambda=overall.lambda.min)
+			cv.fit.glmnet[[i]] <- list(finalmod=finalmod, alphamin=overall.alpha.min, lambdamin=overall.lambda.min)
+}
+
+#cv2.fit.glmnet=lapply(1:nfolds,function(i)cv2.glmnet(X[-folds[[i]],],Y[-folds[[i]]],family="gaussian",standardize=T,alphasOfInterest=seq(0,1,by=0.1)))
+
 #added: extracted beta-coefficients to monitor feature selection for Elastic net and Lasso
-coef.glmnet = sapply(1:nfolds, function(i) coef(cv.fit.glmnet[[1]]$glmnet.fit)[,which(cv.fit.glmnet[[i]]$lambda==cv.fit.glmnet[[i]]$lambda.min)])
+coef.glmnet = sapply(1:nfolds, function(i) as.matrix(coef(cv.fit.glmnet[[i]]$finalmod)))
 # 
-p.cv.glmnet=unlist(lapply(1:nfolds,function(i)predict(fit.glmnet[[i]],matrix(X[folds[[i]],],ncol=ncol(X)),s=cv.fit.glmnet[[i]]$lambda.min)))
+p.cv.glmnet=unlist(lapply(1:nfolds,function(i)predict(cv.fit.glmnet[[i]]$finalmod, matrix(X[folds[[i]],],ncol=ncol(X)))))
 p.cv.glmnet<-p.cv.glmnet[order(unlist(folds))]
 
 #Calculate CV mean of the outcome#
@@ -211,7 +323,7 @@ if(nrow(X2)!=length(Y)) {stop("Dimensions of X and Y do not match!")}
 tmp<-glmnet.2CV(X2,res,alpha=alpha,folds=folds,nfolds=nfolds)
 p=tmp$p
 Q2=tmp$Q2
-bhat= tmp$betahat[-1,] #added coefficients extraction
+bhat= tmp$betahat[-1,]
 RIscoreu0v0 <- rowSums(matrix(as.logical(bhat), ncol=ncol(bhat), nrow=nrow(bhat) ))
 
 p0<-rep(NA,length(Y))
